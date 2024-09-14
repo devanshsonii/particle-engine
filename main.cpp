@@ -1,5 +1,6 @@
 #include <iostream>
 #include <vector>
+#include <cmath>
 #include "raylib.h"
 
 const float g = 9.81f;
@@ -22,7 +23,7 @@ Vector2 operator*(float scalar, const Vector2& v) {
 }
 
 Vector2 computeAcceleration(const State &s) {
-    return {0, -g};
+    return {0, g}; // Gravity points downward
 }
 
 State derivative(const State &s) {
@@ -45,152 +46,171 @@ State rk4(const State& s, float dt) {
         s.velocity + k3.velocity * dt
     });
     return {
-        s.pos + (k1.pos + 2*k2.pos + 2*k3.pos + k4.pos) * (dt / 6.0f),
-        s.velocity + (k1.velocity + 2*k2.velocity + 2*k3.velocity + k4.velocity) * (dt / 6.0f)
+        s.pos + (k1.pos + 2.0f*k2.pos + 2.0f*k3.pos + k4.pos) * (dt / 6.0f),
+        s.velocity + (k1.velocity + 2.0f*k2.velocity + 2.0f*k3.velocity + k4.velocity) * (dt / 6.0f)
     };
 }
 
-
-class Pendulum {
+class Particle {
 public:
-    float x, y, length, radius;
+    float x, y, radius;
+    float mass;
     Color color;
     State state;
-    Pendulum(float x, float y, float radius, float length, Color color)
-        : x(x), y(y), radius(radius), length(length), color(color) {
+    Particle(float x, float y, float radius, float length, Color color)
+        : x(x), y(y), radius(radius), color(color) {
             state.pos = {x,y};
             state.velocity = {0,0};
+            mass = radius * radius * 3.14159f; // Mass proportional to area
     }
-    void DrawPendulum(){
+    void DrawParticle(){
         DrawCircle(x, y, radius, color);
     }
     void updatePos(Vector2 mouse);
-    void applyGravity(float dt);
     void applyForce(float forceX, float forceY, float dt);
-    void resolveCollision(Pendulum& other);
-        void checkBounds(float dt) {
-        // Apply gravity
-        state.velocity.y += g * dt;
-        state.pos.y += state.velocity.y * dt;
-        state.pos.x += state.velocity.x * dt; 
+    void resolveCollision(Particle& other);
+    void checkBounds(float dt);
+    void update(float dt) {
+        State newState = rk4(state, dt);
+        state = newState;
         x = state.pos.x;
         y = state.pos.y;
-
-        // Check for collision with screen bounds
-        if (y + radius >= GetScreenHeight()) {
-            y = GetScreenHeight() - radius;
-            state.velocity.y = -(state.velocity.y * 0.8); // bounce back + dampening 
-        }
-        if (y - radius <= 0) {
-            y = radius;
-            state.velocity.y = -(state.velocity.y * 0.8); // bounce back + dampening 
-        }
-        if (x + radius >= GetScreenWidth()) {
-            x = GetScreenWidth() - radius;
-            state.velocity.x = -(state.velocity.x * 0.8); // bounce back + dampening 
-        }
-        if (x - radius <= 0) {
-            x = radius;
-            state.velocity.x = -(state.velocity.x * 0.8); // bounce back + dampening 
-        }
-
-        // Update positions in state
-        state.pos = {x, y};
+        checkBounds(dt);
     }
-
 };
-void Pendulum :: updatePos(Vector2 mouse) {
+
+void Particle::updatePos(Vector2 mouse) {
     x = mouse.x;
     y = mouse.y;
-    state.pos.x = x;
-    state.pos.y = y;
-    state.velocity.x = 0;
-    state.velocity.y = 0;
+    state.pos = {x, y};
+    state.velocity = {0, 0};
 }
 
-void Pendulum :: applyGravity(float dt) {
-    if(y + radius >= GetScreenHeight()){
-        state.velocity.y = -(state.velocity.y * 0.8); // bounce back + dampening 
-    }
-    state.velocity.y += g * dt;
-    state.pos.y += state.velocity.y * dt;
-    state.pos.x += state.velocity.x * dt; 
-    x = state.pos.x;
-    y = state.pos.y;
+void Particle::applyForce(float forceX, float forceY, float dt) {
+    state.velocity.x += forceX * dt / mass;
+    state.velocity.y += forceY * dt / mass;
 }
 
-void Pendulum :: applyForce(float forceX, float forceY, float dt){
-    state.velocity.x += forceX * dt;
-    state.pos.x += state.velocity.x * dt;
-    state.velocity.y += forceY * dt;
-    state.pos.y += state.velocity.y * dt;
-    x = state.pos.x;
-    y = state.pos.y;
-}
-
-void Pendulum :: resolveCollision(Pendulum &other){
+void Particle::resolveCollision(Particle &other) {
     Vector2 delta = {other.x - x, other.y - y};
     float distance = sqrt(delta.x * delta.x + delta.y * delta.y);
     float minDist = radius + other.radius;
 
     if (distance < minDist) {
-        float overlap = 0.5f * (distance - minDist);
+        Vector2 normal = {delta.x / distance, delta.y / distance};
+        Vector2 relativeVelocity = {
+            other.state.velocity.x - state.velocity.x,
+            other.state.velocity.y - state.velocity.y
+        };
 
-        // Displace current pendulum
-        x -= overlap * (x - other.x) / distance;
-        y -= overlap * (y - other.y) / distance;
+        float normalVelocity = relativeVelocity.x * normal.x + relativeVelocity.y * normal.y;
 
-        // Displace other pendulum
-        other.x += overlap * (x - other.x) / distance;
-        other.y += overlap * (y - other.y) / distance;
+        if (normalVelocity > 0) return;
 
-        // Update positions in state
+        float restitution = 1.0f; // Perfectly elastic collisions
+        float impulseScalar = -(1 + restitution) * normalVelocity;
+        impulseScalar /= 1/mass + 1/other.mass;
+
+        Vector2 impulse = {impulseScalar * normal.x, impulseScalar * normal.y};
+
+        state.velocity.x -= impulse.x / mass;
+        state.velocity.y -= impulse.y / mass;
+        other.state.velocity.x += impulse.x / other.mass;
+        other.state.velocity.y += impulse.y / other.mass;
+
+        // Separate particles to prevent overlap
+        float correction = (minDist - distance) / 2.0f;
+        Vector2 correctionVector = {normal.x * correction, normal.y * correction};
+        x -= correctionVector.x;
+        y -= correctionVector.y;
+        other.x += correctionVector.x;
+        other.y += correctionVector.y;
+
         state.pos = {x, y};
         other.state.pos = {other.x, other.y};
-
-        // Resolve velocities
-        Vector2 normal = {delta.x / distance, delta.y / distance};
-        Vector2 relativeVelocity = {state.velocity.x - other.state.velocity.x, state.velocity.y - other.state.velocity.y};
-        float velocityAlongNormal = relativeVelocity.x * normal.x + relativeVelocity.y * normal.y;
-
-        if (velocityAlongNormal > 0) return;
-
-        float restitution = 0.8f; // coefficient of restitution
-        float j = -(1 + restitution) * velocityAlongNormal;
-        j /= 1 / radius + 1 / other.radius;
-
-        Vector2 impulse = {j * normal.x, j * normal.y};
-        state.velocity.x -= 1 / radius * impulse.x;
-        state.velocity.y -= 1 / radius * impulse.y;
-        other.state.velocity.x += 1 / other.radius * impulse.x;
-        other.state.velocity.y += 1 / other.radius * impulse.y;
     }
 }
 
+void Particle::checkBounds(float dt) {
+    if (y + radius >= GetScreenHeight()) {
+        y = GetScreenHeight() - radius;
+        state.velocity.y *= -1.0f; 
+    }
+    if (y - radius <= 0) {
+        y = radius;
+        state.velocity.y *= -1.0f; 
+    }
+    if (x + radius >= GetScreenWidth()) {
+        x = GetScreenWidth() - radius;
+        state.velocity.x *= -1.0f; 
+    }
+    if (x - radius <= 0) {
+        x = radius;
+        state.velocity.x *= -1.0f; 
+    }
+    state.pos = {x, y};
+}
+
+std::vector<Particle> particles;
 
 
+float calculateTotalEnergy(const std::vector<Particle>& particles) {
+    float totalEnergy = 0.0f;
+    for (const auto& p : particles) {
+        float kineticEnergy = 0.5f * p.mass * (p.state.velocity.x * p.state.velocity.x + 
+                                               p.state.velocity.y * p.state.velocity.y);
+        float potentialEnergy = p.mass * g * (GetScreenHeight() - p.y);
+        totalEnergy += kineticEnergy + potentialEnergy;
+    }
+    return totalEnergy;
+}
 
-std::vector<Pendulum> pendulums;
+void testEnergyConservation(int numSteps, float dt) {
+    float initialEnergy = calculateTotalEnergy(particles);
+    float maxEnergyDifference = 0.0f;
+
+    for (int i = 0; i < numSteps; i++) {
+        for (auto& pen : particles) {
+            pen.update(dt);
+        }
+        if (particles.size() >= 2) {
+            for (size_t i = 0; i < particles.size(); i++) {
+                for (size_t j = i + 1; j < particles.size(); j++) {
+                    particles[i].resolveCollision(particles[j]);
+                }
+            }
+        }
+        float currentEnergy = calculateTotalEnergy(particles);
+        float energyDifference = std::abs(currentEnergy - initialEnergy) / initialEnergy;
+        maxEnergyDifference = std::max(maxEnergyDifference, energyDifference);
+    }
+
+    std::cout << "Maximum energy difference: " << maxEnergyDifference * 100 << "%" << std::endl;
+    if (maxEnergyDifference < 0.01) {
+        std::cout << "Energy is well conserved (less than 1% difference)" << std::endl;
+    } else {
+        std::cout << "Energy conservation error exceeds 1%" << std::endl;
+    }
+}
 
 void Draw() {
-    for (auto& pen : pendulums) {
-        pen.DrawPendulum();
+    for (auto& pen : particles) {
+        pen.DrawParticle();
     }
 }
 
 void Update(float dt) {
     Vector2 mouse = GetMousePosition();
     if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-        pendulums.emplace_back(mouse.x, mouse.y, 25, 100, RED);
+        particles.emplace_back(mouse.x, mouse.y, 25, 100, RED);
     }
-    for (auto& pen : pendulums) {
-        // pen.applyGravity(dt);
-        pen.checkBounds(dt);
+    for (auto& pen : particles) {
+        pen.update(dt);
     }
-    if(pendulums.size() >= 2){
-        for(int i = 0; i < pendulums.size(); i++){
-            for(int j = i+1; j < pendulums.size(); j++){
-                pendulums[i].resolveCollision(pendulums[j]);
+    if (particles.size() >= 2) {
+        for (size_t i = 0; i < particles.size(); i++) {
+            for (size_t j = i + 1; j < particles.size(); j++) {
+                particles[i].resolveCollision(particles[j]);
             }
         }
     }
@@ -200,8 +220,10 @@ int main() {
     const int screenHeight = 800;
     const int screenWidth = 800;
     const float dt = 1.0f / 60.0f;
-    SetTargetFPS(60);
-    InitWindow(screenWidth, screenHeight, "Pendulum");
+    SetTargetFPS(90);
+    InitWindow(screenWidth, screenHeight, "Particle");
+
+    // testEnergyConservation(10000, dt);
     while (!WindowShouldClose()) {
         BeginDrawing();
         ClearBackground(BLACK);
