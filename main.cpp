@@ -57,7 +57,7 @@ public:
     float mass;
     Color color;
     State state;
-    Particle(float x, float y, float radius, float length, Color color)
+    Particle(float x, float y, float radius, Color color)
         : x(x), y(y), radius(radius), color(color) {
             state.pos = {x,y};
             state.velocity = {0,0};
@@ -153,6 +153,58 @@ void Particle::checkBounds(float dt) {
 
 std::vector<Particle> particles;
 
+class WallParticle {
+public:
+    float x, y, radius;
+    float mass;
+    Color color;
+    WallParticle(float x, float y, float radius, Color color)
+        : x(x), y(y), radius(radius), color(color) {
+            mass = radius * radius * 3.14159f; // Mass proportional to area
+    }
+    void DrawParticle(){
+        DrawCircle(x, y, radius, color);
+    }
+    // all other particles bounce off it, this particle is a wall and will not move 
+    void resolveCollision(Particle& other);
+
+};
+
+void WallParticle::resolveCollision(Particle &other) {
+    Vector2 delta = {other.x - x, other.y - y};
+    float distance = sqrt(delta.x * delta.x + delta.y * delta.y);
+    float minDist = radius + other.radius;
+
+    if (distance < minDist) {
+        Vector2 normal = {delta.x / distance, delta.y / distance};
+        Vector2 relativeVelocity = other.state.velocity;
+
+        float normalVelocity = relativeVelocity.x * normal.x + relativeVelocity.y * normal.y;
+
+        if (normalVelocity > 0) return;
+
+        float restitution = 1.0f; // Perfectly elastic collisions
+        float impulseScalar = -(1 + restitution) * normalVelocity;
+        impulseScalar /= 1 / other.mass;
+
+        Vector2 impulse = {impulseScalar * normal.x, impulseScalar * normal.y};
+
+        other.state.velocity.x += impulse.x / other.mass;
+        other.state.velocity.y += impulse.y / other.mass;
+
+        // Separate particles to prevent overlap
+        float correction = (minDist - distance) / 2.0f;
+        Vector2 correctionVector = {normal.x * correction, normal.y * correction};
+        other.x += correctionVector.x;
+        other.y += correctionVector.y;
+
+        other.state.pos = {other.x, other.y};
+    }
+}
+
+std::vector<WallParticle> wall_particles;
+
+
 
 float calculateTotalEnergy(const std::vector<Particle>& particles) {
     float totalEnergy = 0.0f;
@@ -197,15 +249,26 @@ void Draw() {
     for (auto& pen : particles) {
         pen.DrawParticle();
     }
+    for (auto& wall_pen : wall_particles) {
+        wall_pen.DrawParticle();
+    }
 }
 
 void Update(float dt) {
     Vector2 mouse = GetMousePosition();
     if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-        particles.emplace_back(mouse.x, mouse.y, 25, 100, RED);
+        particles.emplace_back(mouse.x, mouse.y, 25, RED);
+    }
+    if (IsKeyDown(KEY_W)){
+        wall_particles.emplace_back(mouse.x, mouse.y, 5, BLUE);
     }
     for (auto& pen : particles) {
         pen.update(dt);
+    }
+    for(auto &wall_pen : wall_particles){
+        for(auto &pen : particles){
+            wall_pen.resolveCollision(pen);
+        }
     }
     if (particles.size() >= 2) {
         for (size_t i = 0; i < particles.size(); i++) {
@@ -214,6 +277,7 @@ void Update(float dt) {
             }
         }
     }
+    // std::cout << calculateTotalEnergy(particles) << "\n";
 }
 
 int main() {
@@ -222,7 +286,6 @@ int main() {
     const float dt = 1.0f / 60.0f;
     SetTargetFPS(90);
     InitWindow(screenWidth, screenHeight, "Particle");
-
     // testEnergyConservation(10000, dt);
     while (!WindowShouldClose()) {
         BeginDrawing();
